@@ -1647,8 +1647,8 @@ class IridiumCommunicator(object):
         if len(message) > 340:
             raise IridiumError("Message length must be less than 341 bytes.")
 
-        if isinstance(message, str):
-            message = message.encode("utf-8")
+        #if isinstance(message, str):
+        #    message = message.encode("utf-8")
 
         self._write_queue.append(message)
         self.previous_command = Command.WRITE_BINARY + str(len(message)).encode("utf-8")
