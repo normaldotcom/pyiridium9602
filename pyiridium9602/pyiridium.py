@@ -291,7 +291,8 @@ def parse_session(data):
     try:
         # Find the Message data
         resp = data.strip()
-        idx = resp.find(b"+SBDIX:")
+        idx = resp.find("+SBDIX:")
+
         if idx >= 0:
             resp = resp[idx+7:].strip()
             endline = resp.find(b'\n')
@@ -311,7 +312,8 @@ def parse_session(data):
             return mo_status, mo_msn, mt_status, mt_msn, mt_length, mt_queued
 
     except Exception as err:
-        raise IridiumError("Could not parse the session!")  # from err
+        raise IridiumError("Could not parse the session!")
+
     raise IridiumError("Could not parse the session!")
 # end parse_session
 
@@ -339,19 +341,20 @@ def parse_read_binary(data):
             data = data[idx+9:]
 
         # Check the data
-        msg_len = int.from_bytes(data[:2], "big")
+        msg_len = int(data[:2].encode('hex'), 16)
         content = data[2: msg_len + 2]
         checksum = data[msg_len + 2: msg_len + 2 + 2]
         if len(checksum) != 2:
             raise ValueError("Not enough data given!")
 
         # Calculate the checksum
-        calc_check = int(sum(content)).to_bytes(4, 'big')[2:]  # smallest 2 bytes of the sum
+        calc_check = int(sum(bytearray(content))) & 0xffff #.to_bytes(4, 'big')[2:]
+        calc_check = chr((calc_check >> 8) & 0xff) + chr(calc_check & 0xff)
 
         return msg_len, content, checksum, calc_check
 
     except Exception as err:
-        raise IridiumError("Could not parse the read binary response!")  # from err
+        raise IridiumError("Could not parse the read binary response!")
 # end parse_read_binary
 
 
@@ -370,10 +373,10 @@ def has_read_binary_data(data):
         idx = data.find(b"AT+SBDRB\r")
         if idx >= 0:
             data = data[idx+9:]
+
     
         # Check the data
-        msg_len = int.from_bytes(data[:2], "big")
-        # content = data[2: msg_len + 2]
+        msg_len = int(data[:2].encode('hex'), 16)
         checksum = data[msg_len + 2: msg_len + 2 + 2]
         if len(checksum) != 2:
             return False
@@ -925,6 +928,8 @@ class IridiumCommunicator(object):
                 except IridiumError as err:
                     self.signal.notification("Error", "Could not parse the signal quality response", str(err))
                     command_success = False
+                    # EMZ
+                    raise
 
             elif Command.CHECK_RING == self._previous_command:
                 try:
@@ -991,7 +996,6 @@ class IridiumCommunicator(object):
                 # Final check for data
                 if not has_read_binary_data(data):
                     self._read_buf = data + Command.OK + self._read_buf
-                    print("here", data, self._read_buf)
                     return
 
                 # Parse the data
@@ -1009,7 +1013,7 @@ class IridiumCommunicator(object):
                 except IridiumError as err:
                     self.signal.notification("Error", "Could not parse the read binary data", str(err))
                     command_success = False
-
+                    
             # Write Binary
             elif Command.WRITE_BINARY == self._previous_command:
                 try:
@@ -1028,29 +1032,45 @@ class IridiumCommunicator(object):
 
             # A message completed
             self.signal.command_finished(self._previous_command, command_success, data)
-            self._previous_command = None
+            self.previous_command = None
 
         # Check for a READY
         elif Command.READY in self._read_buf and Command.READ_BINARY != self._previous_command:
-
+            print("GOT READY")
             # Split out the command from the buff
             command_success = True
             idx = self._read_buf.index(Command.READY)
             data = self._read_buf[:idx]
             self._read_buf = self._read_buf[idx + len(Command.READY):]
 
+            print("Previous command was ", self._previous_command)
+
             # Check the commands that use "READY"
-            if self._previous_command.startswith(Command.WRITE_BINARY):
+            # EMZ looks like there was a space ahead of it....
+            #if self._previous_command.startswith(Command.WRITE_BINARY):
+            if Command.WRITE_BINARY in self._previous_command:
+                print("Writing response")
                 # Write a binary message
                 message = self._write_queue.popleft()
+
                 # msg_length already given with the write binary message
-                checksum = int(sum(message)).to_bytes(4, 'big')[2:]  # smallest 2 bytes of the sum
-                self.write_serial(message + checksum)
+
+                #calc_check = int(sum(bytearray(message))) & 0xffff
+                #calc_check_assy = [(calc_check >> 8) & 0xff, calc_check & 0xff]
+                checksum = 0
+                for c in message:
+                    checksum = checksum + ord(c)
+
+
+
+                towrite = (message + chr((checksum >> 8) & 0xff) + chr(checksum & 0xff)) #checksum)
+                self.write_serial(towrite)
 
             # A message with no known response completed
             self.signal.command_finished(self._previous_command, command_success, data)
-            self._previous_command = None        
+            self.previous_command = None        
     # end check_pending_command
+
 
     def check_unsolicited(self):
         """Check the buffers for an unsolicited command or a queued write message."""
@@ -1065,7 +1085,7 @@ class IridiumCommunicator(object):
 
         elif len(self._sequential_write_queue) > 0:
             # Write messages from the queue
-            self._previous_command = self._sequential_write_queue.popleft()
+            self.previous_command = self._sequential_write_queue.popleft()
             self.write_serial(self.previous_command + b'\r')
             self._read_buf = b''
 
